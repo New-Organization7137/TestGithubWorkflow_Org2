@@ -51,6 +51,7 @@ jobs:
           persist-credentials: false
 
       # 2. Generate a short-lived GitHub App installation token for this repository.
+      # Generate a repository-scoped, short-lived token for GitHub API access.
       - name: Generate GitHub App Installation Token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -61,6 +62,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
 
       # 3. Validate user inputs before making API calls.
+      # Reject missing or malformed release inputs before making API calls.
       - name: Validate release inputs
         shell: bash
         run: |
@@ -98,6 +100,7 @@ jobs:
           echo "================================================"
 
       # 4. Confirm that the requested deployment ref exists in GitHub.
+      # Confirm the requested branch or tag exists and is accessible to the App.
       - name: Validate deployment ref
         shell: bash
         env:
@@ -152,12 +155,14 @@ jobs:
           echo "================================================"
 
       # 5. Install the required Python runtime.
+      # Install the Python version used to execute the release script.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       # 6. Install the HTTP dependency required by create_release.py.
+      # Install the HTTP library used by the GitHub and Jira API clients.
       - name: Install Python dependencies
         shell: bash
         run: |
@@ -176,6 +181,7 @@ jobs:
           echo "================================================"
 
       # 7. Verify the script, Python syntax, and required environment.
+      # Verify the checked-out script and runtime before creating Jira releases.
       - name: Diagnose release configuration
         shell: bash
         env:
@@ -239,6 +245,7 @@ jobs:
           echo "================================================"
 
       # 8. Read repository custom properties and create Jira releases.
+      # Pass the required credentials to the script and propagate any failure status.
       - name: Create Jira releases
         shell: bash
         env:
