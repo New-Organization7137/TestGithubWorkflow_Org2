@@ -63,6 +63,7 @@ LOGGER = logging.getLogger(__name__)
 
 # Environment loading and validation.
 
+# Read a required environment variable without printing its value.
 def required_env(name: str) -> str:
     """Return a required environment variable without exposing its value."""
 
@@ -81,6 +82,7 @@ def required_env(name: str) -> str:
     return value
 
 
+# Validate metadata fields before storing them in Jira descriptions.
 def validate_metadata_value(name: str, value: str) -> None:
     """Reject values that would corrupt the pipe-delimited Jira description."""
 
@@ -96,6 +98,7 @@ def validate_metadata_value(name: str, value: str) -> None:
         raise ValueError(f"{name} must not contain control characters.")
 
 
+# Load credentials and release inputs, then normalize and validate the selected ref.
 def load_environment() -> dict[str, str]:
     """Load and validate application environment variables."""
 
@@ -158,6 +161,7 @@ def load_environment() -> dict[str, str]:
 
 # GitHub API operations.
 
+# Split and validate the owner/repository identifier used by GitHub API calls.
 def parse_repository(repository: str) -> tuple[str, str]:
     """
     Split GitHub repository into owner and repository name.
@@ -198,6 +202,7 @@ def parse_repository(repository: str) -> tuple[str, str]:
     return owner, repo
 
 
+# Configure authenticated HTTP access using the short-lived GitHub App token.
 def create_github_session(
     token: str,
 ) -> requests.Session:
@@ -217,6 +222,7 @@ def create_github_session(
     return session
 
 
+# Send a timed GitHub API request and handle transport or HTTP failures consistently.
 def github_request(
     session: requests.Session,
     method: str,
@@ -249,6 +255,7 @@ def github_request(
     return response
 
 
+# Log GitHub API failure details to support troubleshooting.
 def log_github_api_error(
     response: Response,
     operation: str,
@@ -270,6 +277,7 @@ def log_github_api_error(
         )
 
 
+# Decode and validate JSON returned by the GitHub API.
 def json_value(
     response: Response,
     operation: str,
@@ -284,6 +292,7 @@ def json_value(
         ) from exc
 
 
+# Retrieve and normalize repository custom properties used to configure releases.
 def get_repository_properties(
     session: requests.Session,
     repository: str,
@@ -421,20 +430,60 @@ def get_repository_properties(
     return properties
 
 
+# Canonicalize property names once and reject ambiguous case-only duplicates.
+def normalize_property_names(properties: dict[str, Any]) -> dict[str, Any]:
+    """Return properties keyed by trimmed lowercase names.
+
+    Property values are preserved here; each value is normalized according to
+    its own meaning by the relevant configuration parser.
+    """
+
+    normalized: dict[str, Any] = {}
+
+    for name, value in properties.items():
+        canonical_name = str(name).strip().lower()
+
+        if not canonical_name:
+            raise ValueError("GitHub returned a custom property with an empty name.")
+
+        if canonical_name in normalized:
+            if normalized[canonical_name] != value:
+                raise ValueError(
+                    f"Conflicting GitHub custom properties use the same name "
+                    f"with different casing: '{canonical_name}'. Keep only one."
+                )
+            LOGGER.warning(
+                "Duplicate custom property name '%s' differs only by casing; "
+                "using one equivalent value.",
+                canonical_name,
+            )
+            continue
+
+        normalized[canonical_name] = value
+
+    return normalized
+
+
+# Resolve property names without case sensitivity, then validate required values.
 def get_property_value(
     properties: dict[str, Any],
     property_name: str,
     repository: str,
 ) -> Any:
-    """Return a required GitHub custom property."""
+    """Return a required GitHub custom property regardless of key casing."""
 
-    if property_name not in properties:
+    actual_name = next(
+        (name for name in properties if str(name).strip().lower() == property_name.lower()),
+        None,
+    )
+
+    if actual_name is None:
         raise ValueError(
             f"GitHub custom property '{property_name}' "
             f"is not configured for repository '{repository}'."
         )
 
-    value = properties[property_name]
+    value = properties[actual_name]
 
     if value is None:
         raise ValueError(
@@ -447,6 +496,7 @@ def get_property_value(
 
 # Deployment type configuration.
 
+# Resolve direct or template deployment mode, defaulting to direct for compatibility.
 def get_deployment_type(
     properties: dict[str, Any],
     repository: str,
@@ -473,7 +523,12 @@ def get_deployment_type(
 
     # Backward compatibility: existing repositories default to direct.
 
-    if DEPLOYMENT_TYPE_PROPERTY not in properties:
+    actual_property_name = next(
+        (name for name in properties if str(name).strip().lower() == DEPLOYMENT_TYPE_PROPERTY),
+        None,
+    )
+
+    if actual_property_name is None:
         LOGGER.info(
             "Custom property '%s' is not configured for repository "
             "'%s'. Defaulting deployment type to '%s'.",
@@ -484,7 +539,7 @@ def get_deployment_type(
 
         return DEPLOYMENT_TYPE_DIRECT
 
-    value = properties[DEPLOYMENT_TYPE_PROPERTY]
+    value = properties[actual_property_name]
 
     if value is None:
         LOGGER.info(
@@ -536,6 +591,7 @@ def get_deployment_type(
 
 # Jira project configuration from repository properties.
 
+# Parse and validate the Jira project keys configured for this repository.
 def get_jira_projects(
     properties: dict[str, Any],
     repository: str,
@@ -556,13 +612,13 @@ def get_jira_projects(
 
     if isinstance(value, list):
         projects = [
-            str(project).strip()
+            str(project).strip().upper()
             for project in value
             if str(project).strip()
         ]
     else:
         projects = [
-            project.strip()
+            project.strip().upper()
             for project in str(value).split(",")
             if project.strip()
         ]
@@ -600,6 +656,7 @@ def get_jira_projects(
 
 # Workflow configuration from repository properties.
 
+# Parse and validate direct workflow names or environment-to-template workflow mappings.
 def get_workflows(
     properties: dict[str, Any],
     repository: str,
@@ -652,9 +709,14 @@ def get_workflows(
 
     property_name: str | None = None
 
+    normalized_property_names = {
+        str(name).strip().lower(): name
+        for name in properties
+    }
+
     for candidate in WORKFLOW_PROPERTY_NAMES:
-        if candidate in properties:
-            property_name = candidate
+        if candidate in normalized_property_names:
+            property_name = normalized_property_names[candidate]
             break
 
     if property_name is None:
@@ -778,6 +840,7 @@ def get_workflows(
 
 # Jira API operations.
 
+# Configure authenticated HTTP access to the Jira REST API.
 def create_jira_session(
     email: str,
     token: str,
@@ -801,6 +864,7 @@ def create_jira_session(
     return session
 
 
+# Send a timed Jira API request and handle HTTP or transport failures consistently.
 def jira_request(
     session: requests.Session,
     method: str,
@@ -833,6 +897,7 @@ def jira_request(
     return response
 
 
+# Log Jira API response details without exposing request credentials.
 def log_api_error(
     response: Response,
     operation: str,
@@ -854,6 +919,7 @@ def log_api_error(
         )
 
 
+# Decode a Jira API response and ensure the result is a JSON object.
 def json_object(
     response: Response,
     operation: str,
@@ -875,6 +941,7 @@ def json_object(
     return data
 
 
+# Confirm that a configured Jira project exists and is accessible.
 def get_jira_project(
     session: requests.Session,
     jira_url: str,
@@ -935,6 +1002,7 @@ def get_jira_project(
 
 # Jira release creation and duplicate handling.
 
+# Identify Jira responses that indicate the release version already exists.
 def is_duplicate_version(
     response: Response,
 ) -> bool:
@@ -956,6 +1024,7 @@ def is_duplicate_version(
     )
 
 
+# Create the requested Jira project version with the generated release metadata.
 def create_jira_version(
     session: requests.Session,
     jira_url: str,
@@ -1055,6 +1124,7 @@ def create_jira_version(
 
 # Jira release metadata serialization.
 
+# Serialize release details into the pipe-delimited format consumed by the deployment app.
 def build_release_description(
     environment: dict[str, str],
     deployment_type: str,
@@ -1102,6 +1172,7 @@ def build_release_description(
 
 # Per-project release processing.
 
+# Create a release when missing and treat an existing release as a successful skip.
 def process_project(
     session: requests.Session,
     jira_url: str,
@@ -1179,6 +1250,7 @@ def process_project(
 
 # Release configuration and result logging.
 
+# Log resolved release settings for traceability without logging secrets.
 def log_configuration(
     environment: dict[str, str],
     deployment_type: str,
@@ -1257,6 +1329,7 @@ def log_configuration(
 
 # Application entry point and orchestration.
 
+# Coordinate configuration, GitHub properties, and Jira release creation across projects.
 def main() -> int:
     """Run the Jira release creation process."""
 
@@ -1284,9 +1357,11 @@ def main() -> int:
 
         # Load repository-level deployment configuration.
 
-        properties = get_repository_properties(
-            github_session,
-            environment["REPOSITORY"],
+        properties = normalize_property_names(
+            get_repository_properties(
+                github_session,
+                environment["REPOSITORY"],
+            )
         )
 
         # Resolve direct or template deployment mode with a direct default.
@@ -1435,7 +1510,6 @@ def main() -> int:
         )
 
     return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
